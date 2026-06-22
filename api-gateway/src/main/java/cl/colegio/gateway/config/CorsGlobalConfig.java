@@ -11,8 +11,11 @@ import java.util.List;
 /**
  * Configuración CORS global para el API Gateway (WebFlux/Reactivo).
  *
- * Permite que el frontend (Vite en :5173 o :3000) se comunique
- * con el gateway sin problemas de CORS.
+ * Permite que el frontend (Vite en :5173, :3000, ALB, o cualquier
+ * IP dinámica de laboratorio AWS Academy) se comunique con el gateway.
+ *
+ * Usa allowedOriginPatterns en lugar de allowedOrigins para poder
+ * combinar wildcard con allowCredentials=true.
  */
 @Configuration
 public class CorsGlobalConfig {
@@ -20,11 +23,9 @@ public class CorsGlobalConfig {
     @Bean
     public CorsWebFilter corsWebFilter() {
         var config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of(
-                "http://localhost:5173",
-                "http://localhost:3000",
-                "http://174.129.50.204"           // Frontend EC2 producción
-        ));
+        // Permite cualquier origen — necesario para IPs dinámicas de AWS Academy
+        // y dominio del ALB que cambia en cada laboratorio
+        config.setAllowedOriginPatterns(List.of("*"));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
