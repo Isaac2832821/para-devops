@@ -83,7 +83,7 @@ EXISTING_SG=$(aws ec2 describe-security-groups \
 if [[ "$EXISTING_SG" == "None" || -z "$EXISTING_SG" ]]; then
   ECS_SG=$(aws ec2 create-security-group \
     --group-name "$ECS_SG_NAME" \
-    --description "Security Group para ECS Fargate — Colegio O'Higgins" \
+    --description "Security Group para ECS Fargate - Colegio OHiggins" \
     --vpc-id "$VPC_ID" \
     --region "$REGION" \
     --query "GroupId" --output text)
