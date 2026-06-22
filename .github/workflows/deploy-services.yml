@@ -120,16 +120,23 @@ jobs:
                       "Name=instance-state-name,Values=running" \
             --query "Reservations[0].Instances[0].PrivateIpAddress" \
             --output text)
+          EUREKA_IP=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=ec2-gateway" \
+                      "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].PrivateIpAddress" \
+            --output text)
           echo "instance_id=$ID" >> $GITHUB_OUTPUT
           echo "instance_ip=$IP" >> $GITHUB_OUTPUT
+          echo "eureka_ip=$EUREKA_IP" >> $GITHUB_OUTPUT
           echo "✅ Services instance: $ID (IP: $IP)"
+          echo "✅ Eureka IP: $EUREKA_IP"
 
       - name: 🖥️ Deploy via SSM en EC2-Services
         env:
           DH_USER:     ${{ secrets.DOCKERHUB_USERNAME }}
           DH_TOKEN:    ${{ secrets.DOCKERHUB_TOKEN }}
           JWT:         ${{ secrets.JWT_SECRET }}
-          EUREKA_IP:   ${{ secrets.EUREKA_HOST }}
+          EUREKA_IP:   ${{ steps.get-instance.outputs.eureka_ip }}
           RABBITMQ_U:  ${{ secrets.RABBITMQ_USER }}
           RABBITMQ_P:  ${{ secrets.RABBITMQ_PASS }}
           REPO:        ${{ github.repository }}
@@ -215,60 +222,80 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            us-east-1
 
-      - name: 🔍 Obtener IP pública de ec2-services
+      - name: 🔍 Obtener info de EC2
         id: get-ip
         run: |
-          PUBLIC_IP=$(aws ec2 describe-instances \
+          INSTANCE_ID=$(aws ec2 describe-instances \
             --filters "Name=tag:Name,Values=ec2-services" \
+                      "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text)
+          GATEWAY_IP=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=ec2-gateway" \
                       "Name=instance-state-name,Values=running" \
             --query "Reservations[0].Instances[0].PublicIpAddress" \
             --output text)
-          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
-          echo "EC2-Services Public IP: $PUBLIC_IP"
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "gateway_url=http://$GATEWAY_IP:8080" >> $GITHUB_OUTPUT
+          echo "EC2-Services Instance ID: $INSTANCE_ID"
 
-      - name: 🏥 Verificar Health de Microservicios
+      - name: 🏥 Verificar Health de Microservicios (Interno vía SSM)
         env:
-          PUBLIC_IP: ${{ steps.get-ip.outputs.public_ip }}
+          INSTANCE_ID: ${{ steps.get-ip.outputs.instance_id }}
         run: |
-          echo "🔍 Comprobando health de microservicios en $PUBLIC_IP..."
-          FAILED=0
-
-          check_health() {
-            local NAME=$1
-            local PORT=$2
-            local ENDPOINT="${PUBLIC_IP}:${PORT}/actuator/health"
-            for attempt in 1 2 3; do
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://$ENDPOINT" || echo "000")
-              if [[ "$HTTP_CODE" == "200" ]]; then
-                echo "  ✅ $NAME (:$PORT) — UP"
-                return 0
-              fi
-              echo "  ⏳ $NAME (:$PORT) — attempt $attempt/3 (HTTP $HTTP_CODE)"
-              sleep 15
-            done
-            echo "  ❌ $NAME (:$PORT) — UNHEALTHY"
-            return 1
+          echo "🔍 Comprobando health internamente en la instancia EC2..."
+          
+          cat << 'EOF' > /tmp/health.json
+          {
+            "commands": [
+              "FAILED=0",
+              "for PORT in 8081 8082 8083 8084 8085 8086; do",
+              "  HEALTHY=0",
+              "  for i in 1 2 3; do",
+              "    HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:$PORT/actuator/health || echo '000')",
+              "    if [ \"$HTTP_CODE\" == \"200\" ]; then",
+              "      echo \"  ✅ Puerto $PORT — UP\"",
+              "      HEALTHY=1; break",
+              "    fi",
+              "    echo \"  ⏳ Puerto $PORT — attempt $i/3 (HTTP $HTTP_CODE)\"",
+              "    sleep 15",
+              "  done",
+              "  if [ $HEALTHY -eq 0 ]; then FAILED=$((FAILED+1)); echo \"  ❌ Puerto $PORT — UNHEALTHY\"; fi",
+              "done",
+              "if [ $FAILED -gt 0 ]; then exit 1; fi",
+              "echo \"\"",
+              "echo \"✅ Todos los microservicios están saludables!\""
+            ]
           }
-
-          check_health "ms-autenticacion"  "8081" || FAILED=$((FAILED+1))
-          check_health "ms-calificaciones" "8082" || FAILED=$((FAILED+1))
-          check_health "ms-asistencia"     "8083" || FAILED=$((FAILED+1))
-          check_health "ms-notificaciones" "8084" || FAILED=$((FAILED+1))
-          check_health "ms-horarios"       "8085" || FAILED=$((FAILED+1))
-          check_health "ms-reportes"       "8086" || FAILED=$((FAILED+1))
-
-          echo ""
-          if [[ $FAILED -eq 0 ]]; then
-            echo "✅ Todos los microservicios están saludables!"
-          else
-            echo "⚠️  $FAILED microservicio(s) no respondieron al health check."
-            echo "   Verificar logs en la instancia EC2."
-            exit 1
-          fi
+          EOF
+          
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file:///tmp/health.json \
+            --comment "Health Check Interno" \
+            --region us-east-1 \
+            --query "Command.CommandId" --output text)
+            
+          for i in $(seq 1 30); do
+            sleep 10
+            STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region us-east-1 --query "StatusDetails" --output text 2>/dev/null || echo "Pending")
+            if [[ "$STATUS" == "Success" ]]; then
+              aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region us-east-1 --query "StandardOutputContent" --output text
+              exit 0
+            elif [[ "$STATUS" == *"Failed"* || "$STATUS" == "Cancelled" || "$STATUS" == *"TimedOut"* ]]; then
+              echo "❌ Health check falló."
+              aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region us-east-1 --query "StandardOutputContent" --output text
+              aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region us-east-1 --query "StandardErrorContent" --output text
+              exit 1
+            fi
+          done
+          echo "❌ Timeout esperando a SSM"
+          exit 1
 
       - name: 🔥 Smoke Test — API Gateway
         env:
-          GATEWAY_URL: ${{ secrets.VITE_API_URL }}
+          GATEWAY_URL: ${{ steps.get-ip.outputs.gateway_url }}
         run: |
           echo "🔥 Smoke test al API Gateway: $GATEWAY_URL"
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
