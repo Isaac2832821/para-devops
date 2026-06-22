@@ -240,9 +240,17 @@ jobs:
             --names "colegio-alb" \
             --region "${{ env.AWS_REGION }}" \
             --query "LoadBalancers[0].DNSName" \
-            --output text)
-          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
-          echo "ALB DNS: $ALB_DNS"
+            --output text 2>/dev/null || echo "NOT_FOUND")
+          if [[ "$ALB_DNS" == "NOT_FOUND" || -z "$ALB_DNS" ]]; then
+            echo "⚠️  ALB 'colegio-alb' no encontrado. Credenciales AWS expiradas o lab reiniciado."
+            echo "   Actualiza AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN en GitHub Secrets."
+            echo "alb_dns=" >> $GITHUB_OUTPUT
+            echo "alb_ok=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ ALB encontrado: $ALB_DNS"
+            echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
+            echo "alb_ok=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: 🏥 Health Check — Frontend (ALB:80)
         env:
