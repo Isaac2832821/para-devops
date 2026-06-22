@@ -95,16 +95,36 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            ${{ env.AWS_REGION }}
 
+      - name: 🔍 Verificar si el cluster ECS existe
+        id: check-cluster
+        run: |
+          STATUS=$(aws ecs describe-clusters \
+            --clusters "${{ env.ECS_CLUSTER }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query "clusters[0].status" \
+            --output text 2>/dev/null || echo "MISSING")
+          if [[ "$STATUS" != "ACTIVE" ]]; then
+            echo "⚠️  Cluster ECS '${{ env.ECS_CLUSTER }}' no existe o no está activo (status: $STATUS)."
+            echo "   Probablemente el lab fue reiniciado. Saltando deploy ECS."
+            echo "cluster_ok=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Cluster ECS activo."
+            echo "cluster_ok=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: 🔐 Login a Docker Hub
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: ⚡ Configurar Docker Buildx
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: 🔨 Build & Push — ${{ matrix.service }}
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -122,6 +142,7 @@ jobs:
           cache-to:   type=gha,scope=${{ matrix.service }},mode=max
 
       - name: 🏷️ Actualizar Task Definition ECS con nueva imagen
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
         id: update-task
         run: |
           IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_suffix }}:sha-${{ github.sha }}"
@@ -163,6 +184,7 @@ jobs:
           echo "✅ Nueva Task Definition: $NEW_REVISION"
 
       - name: 🚀 Rolling Deploy en ECS Service
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
         run: |
           echo "🚀 Desplegando en ECS Service: ${{ matrix.ecs_service }}"
           aws ecs update-service \
@@ -183,7 +205,7 @@ jobs:
           echo "✅ Service estable: ${{ matrix.ecs_service }}"
 
       - name: 📊 Estado del Service post-deploy
-        if: always()
+        if: always() && steps.check-cluster.outputs.cluster_ok == 'true'
         run: |
           echo "=== Estado del ECS Service: ${{ matrix.ecs_service }} ==="
           aws ecs describe-services \
