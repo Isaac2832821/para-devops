@@ -121,15 +121,7 @@
 
     <build>
         <plugins>
-            <!-- ── Maven Surefire Plugin (Ignorar tests fallidos) ──────── -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.5.2</version>
-                <configuration>
-                    <testFailureIgnore>true</testFailureIgnore>
-                </configuration>
-            </plugin>
+
 
             <plugin>
                 <groupId>org.springframework.boot</groupId>
