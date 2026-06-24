@@ -166,32 +166,41 @@ jobs:
             --query "taskDefinition" \
             --output json)
 
-          # Fetch Eureka Private IP
-          EUREKA_TASK_ARN=$(aws ecs list-tasks --cluster "${{ env.ECS_CLUSTER }}" --service-name colegio-eureka --query "taskArns[0]" --output text)
-          if [[ "$EUREKA_TASK_ARN" != "None" && -n "$EUREKA_TASK_ARN" ]]; then
-            EUREKA_ENI=$(aws ecs describe-tasks --cluster "${{ env.ECS_CLUSTER }}" --tasks "$EUREKA_TASK_ARN" --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" --output text)
-            EUREKA_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$EUREKA_ENI" --query "NetworkInterfaces[0].PrivateIpAddress" --output text)
-          else
-            EUREKA_IP="EUREKA_PRIVATE_IP"
-          fi
-          echo "Eureka IP found: $EUREKA_IP"
-
-          # Actualizar imagen del container especifico y reemplazar EUREKA_PRIVATE_IP
+          # Actualizar imagen del container especifico y reemplazar EUREKA_PRIVATE_IP dinamicamente
           NEW_TASK_DEF=$(echo "$TASK_DEF" | python3 -c "
           import json, sys, os
+          
+          # Intentar obtener EUREKA_IP con boto3
+          eureka_ip = 'EUREKA_PRIVATE_IP'
+          try:
+              import boto3
+              ecs = boto3.client('ecs', region_name='${{ env.AWS_REGION }}')
+              ec2 = boto3.client('ec2', region_name='${{ env.AWS_REGION }}')
+              tasks = ecs.list_tasks(cluster='${{ env.ECS_CLUSTER }}', serviceName='colegio-eureka', desiredStatus='RUNNING')
+              if tasks['taskArns']:
+                  task_details = ecs.describe_tasks(cluster='${{ env.ECS_CLUSTER }}', tasks=[tasks['taskArns'][0]])
+                  for attachment in task_details['tasks'][0]['attachments']:
+                      if attachment['type'] == 'ElasticNetworkInterface':
+                          for detail in attachment['details']:
+                              if detail['name'] == 'networkInterfaceId':
+                                  eni_id = detail['value']
+                                  eni_details = ec2.describe_network_interfaces(NetworkInterfaceIds=[eni_id])
+                                  eureka_ip = eni_details['NetworkInterfaces'][0]['PrivateIpAddress']
+          except Exception as e:
+              pass
+
           td = json.load(sys.stdin)
           container_name = '${{ matrix.container_name }}'
           new_image = '$IMAGE'
-          eureka_ip = '$EUREKA_IP'
+          
           for cd in td['containerDefinitions']:
               if cd['name'] == container_name:
                   cd['image'] = new_image
-                  print(f'Updated container {container_name} -> {new_image}', flush=True)
               if 'environment' in cd:
                   for env in cd['environment']:
-                      if 'EUREKA_PRIVATE_IP' in env['value']:
+                      if 'EUREKA_PRIVATE_IP' in env['value'] and eureka_ip != 'EUREKA_PRIVATE_IP':
                           env['value'] = env['value'].replace('EUREKA_PRIVATE_IP', eureka_ip)
-                          print(f\"Replaced EUREKA_PRIVATE_IP with {eureka_ip}\", flush=True)
+                          
           # Limpiar campos que no se pueden re-registrar
           for field in ['taskDefinitionArn','revision','status','requiresAttributes',
                         'compatibilities','registeredAt','registeredBy']:
