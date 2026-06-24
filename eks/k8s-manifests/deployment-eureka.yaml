@@ -1,0 +1,84 @@
+# ══════════════════════════════════════════════════════════════════
+# deployment-eureka.yaml — Eureka Service Registry
+# Colegio Bernardo O'Higgins — Sistema de Gestión Escolar
+#
+# Imagen: ECR → <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/colegio/colegio-eureka-server
+# Puerto: 8761
+# Réplicas: 1 (service registry no necesita HA en este contexto)
+# ══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eureka-server
+  namespace: colegio
+  labels:
+    app: eureka-server
+    project: colegio-ohiggins
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eureka-server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: eureka-server
+        project: colegio-ohiggins
+    spec:
+      containers:
+        - name: eureka-server
+          # La imagen se actualiza automáticamente por el workflow de CI/CD
+          image: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/colegio/colegio-eureka-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8761
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "docker"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1024Mi"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8761
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8761
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eureka-server
+  namespace: colegio
+  labels:
+    app: eureka-server
+    project: colegio-ohiggins
+spec:
+  type: ClusterIP
+  selector:
+    app: eureka-server
+  ports:
+    - name: http
+      port: 8761
+      targetPort: 8761
+      protocol: TCP

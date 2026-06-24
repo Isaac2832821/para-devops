@@ -1,0 +1,93 @@
+# ══════════════════════════════════════════════════════════════════
+# deployment-autenticacion.yaml — Microservicio de Autenticación
+# Colegio Bernardo O'Higgins — Sistema de Gestión Escolar
+#
+# Imagen: ECR → <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/colegio/colegio-ms-autenticacion
+# Puerto: 8081
+# Réplicas: 1
+# ══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ms-autenticacion
+  namespace: colegio
+  labels:
+    app: ms-autenticacion
+    project: colegio-ohiggins
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ms-autenticacion
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ms-autenticacion
+        project: colegio-ohiggins
+    spec:
+      containers:
+        - name: ms-autenticacion
+          # La imagen se actualiza automáticamente por el workflow de CI/CD
+          image: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/colegio/colegio-ms-autenticacion:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8081
+              name: http
+          env:
+            - name: EUREKA_CLIENT_SERVICEURL_DEFAULTZONE
+              value: "http://eureka-server.colegio.svc.cluster.local:8761/eureka"
+            - name: EUREKA_INSTANCE_PREFERIPADDRESS
+              value: "true"
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: "/app/config/serviceAccountKey.json"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: colegio-secrets
+                  key: jwt-secret
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1024Mi"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ms-autenticacion
+  namespace: colegio
+  labels:
+    app: ms-autenticacion
+    project: colegio-ohiggins
+spec:
+  type: ClusterIP
+  selector:
+    app: ms-autenticacion
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+      protocol: TCP

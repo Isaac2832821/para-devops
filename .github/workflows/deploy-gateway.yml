@@ -220,3 +220,5 @@ jobs:
             sleep 15
           done
           echo "⚠️  Gateway no respondió al health check (puede estar aún iniciando)"
+
+# Trigger gateway

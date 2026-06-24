@@ -1,0 +1,446 @@
+# ══════════════════════════════════════════════════════════════════
+# CI/CD Pipeline — Amazon EKS + Amazon ECR
+# Colegio Bernardo O'Higgins — Sistema de Gestión Escolar
+#
+# Trigger: push a 'deploy' con cambios en servicios core
+# Flujo:
+#   1. Build & Push imagen Docker → Amazon ECR (con SHA tag)
+#   2. Actualizar imagen en Deployment EKS (kubectl set image)
+#   3. Rolling update automático de Kubernetes
+#   4. Esperar rollout exitoso (kubectl rollout status)
+#   5. Health Check vía LoadBalancer DNS
+#
+# Secrets requeridos en GitHub:
+#   - AWS_ACCESS_KEY_ID
+#   - AWS_SECRET_ACCESS_KEY
+#   - AWS_SESSION_TOKEN
+#   - AWS_ACCOUNT_ID          ← NUEVO: tu Account ID de AWS (ej: 123456789012)
+#   - VITE_API_URL            ← URL del API Gateway (para build del frontend)
+#   - VITE_FIREBASE_API_KEY   ← Firebase API Key
+#   - JWT_SECRET              ← Secreto JWT
+#   - RABBITMQ_HOST           ← Host de RabbitMQ
+#   - RABBITMQ_USER           ← Usuario RabbitMQ
+#   - RABBITMQ_PASS           ← Contraseña RabbitMQ
+# ══════════════════════════════════════════════════════════════════
+name: CI/CD — EKS + ECR
+
+on:
+  push:
+    branches:
+      - deploy
+    paths:
+      - "api-gateway/**"
+      - "eureka-server/**"
+      - "frontend/**"
+      - "ms-autenticacion/**"
+      - "ms-calificaciones/**"
+      - "eks/k8s-manifests/**"
+      - ".github/workflows/deploy-eks.yml"
+
+env:
+  AWS_REGION:       us-east-1
+  EKS_CLUSTER:      colegio-eks-cluster
+  K8S_NAMESPACE:    colegio
+  ECR_REGISTRY:     ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPO_PREFIX:  colegio
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 1: Build & Push → Amazon ECR (5 servicios en paralelo)
+  # ─────────────────────────────────────────────────────────────────
+  build-and-push:
+    name: 🐳 Build & Push ECR — ${{ matrix.service }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service:          api-gateway
+            context:          ./api-gateway
+            ecr_repo:         colegio/colegio-api-gateway
+            k8s_deployment:   api-gateway
+            k8s_container:    api-gateway
+
+          - service:          eureka-server
+            context:          ./eureka-server
+            ecr_repo:         colegio/colegio-eureka-server
+            k8s_deployment:   eureka-server
+            k8s_container:    eureka-server
+
+          - service:          frontend
+            context:          ./frontend
+            ecr_repo:         colegio/colegio-frontend
+            k8s_deployment:   frontend
+            k8s_container:    frontend
+
+          - service:          ms-autenticacion
+            context:          ./ms-autenticacion
+            ecr_repo:         colegio/colegio-ms-autenticacion
+            k8s_deployment:   ms-autenticacion
+            k8s_container:    ms-autenticacion
+
+          - service:          ms-calificaciones
+            context:          ./ms-calificaciones
+            ecr_repo:         colegio/colegio-ms-calificaciones
+            k8s_deployment:   ms-calificaciones
+            k8s_container:    ms-calificaciones
+
+    outputs:
+      # Cada job de matrix escribe su salida; el deploy job la usa
+      image-tag: ${{ steps.meta.outputs.image-full }}
+
+    steps:
+      - name: 📥 Checkout código fuente
+        uses: actions/checkout@v4
+
+      - name: 🔑 Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: 🔍 Verificar que el cluster EKS existe
+        id: check-cluster
+        run: |
+          STATUS=$(aws eks describe-cluster \
+            --name "${{ env.EKS_CLUSTER }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query "cluster.status" \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+
+          if [[ "$STATUS" != "ACTIVE" ]]; then
+            echo "⚠️  Cluster EKS '${{ env.EKS_CLUSTER }}' no existe o no está activo (status: $STATUS)."
+            echo "   Ejecuta primero: bash eks/cluster-setup.sh"
+            echo "cluster_ok=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Cluster EKS activo."
+            echo "cluster_ok=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🔐 Login a Amazon ECR
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 🏷️ Construir URI de imagen ECR
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
+        id: meta
+        run: |
+          SHORT_SHA="${GITHUB_SHA::8}"
+          IMAGE_BASE="${{ env.ECR_REGISTRY }}/${{ matrix.ecr_repo }}"
+          IMAGE_SHA="${IMAGE_BASE}:sha-${GITHUB_SHA}"
+          IMAGE_LATEST="${IMAGE_BASE}:latest"
+
+          echo "image-sha=${IMAGE_SHA}"       >> $GITHUB_OUTPUT
+          echo "image-latest=${IMAGE_LATEST}" >> $GITHUB_OUTPUT
+          echo "image-full=${IMAGE_SHA}"      >> $GITHUB_OUTPUT
+          echo "short-sha=${SHORT_SHA}"       >> $GITHUB_OUTPUT
+
+          echo "🏷️ Imagen SHA: ${IMAGE_SHA}"
+          echo "🏷️ Imagen latest: ${IMAGE_LATEST}"
+
+      - name: ⚡ Configurar Docker Buildx
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔨 Build & Push — ${{ matrix.service }} → ECR
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file:    ${{ matrix.context }}/Dockerfile
+          push:    true
+          tags: |
+            ${{ steps.meta.outputs.image-sha }}
+            ${{ steps.meta.outputs.image-latest }}
+          build-args: |
+            VITE_API_URL=${{ secrets.VITE_API_URL }}
+            VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
+          # Caché por servicio — reduce tiempo de build hasta un 70%
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to:   type=gha,scope=${{ matrix.service }},mode=max
+          provenance: false
+
+      - name: 📊 Verificar imagen en ECR
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
+        run: |
+          echo "✅ Imagen publicada en ECR:"
+          aws ecr describe-images \
+            --repository-name "${{ matrix.ecr_repo }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --image-ids imageTag="sha-${{ github.sha }}" \
+            --query "imageDetails[0].{Repo:repositoryName,Tag:imageTags[0],PushedAt:imagePushedAt,SizeBytes:imageSizeInBytes}" \
+            --output table 2>/dev/null || echo "ℹ️  Imagen aún indexándose en ECR..."
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 2: Deploy → Amazon EKS (kubectl)
+  # Espera que TODOS los builds finalicen (needs: build-and-push)
+  # ─────────────────────────────────────────────────────────────────
+  deploy-eks:
+    name: 🚀 Deploy → EKS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: 📥 Checkout código fuente
+        uses: actions/checkout@v4
+
+      - name: 🔑 Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: ⚙️ Configurar kubectl para EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ env.EKS_CLUSTER }}" \
+            --region "${{ env.AWS_REGION }}"
+          echo "✅ kubectl configurado para cluster: ${{ env.EKS_CLUSTER }}"
+          kubectl version --short 2>/dev/null || kubectl version
+
+      - name: 🔐 Login a Amazon ECR (para verificar imágenes)
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 📁 Aplicar manifests base (namespace)
+        run: |
+          kubectl apply -f eks/k8s-manifests/namespace.yaml
+          echo "✅ Namespace '${{ env.K8S_NAMESPACE }}' listo."
+
+      - name: 🔒 Crear/Actualizar Kubernetes Secrets
+        run: |
+          # Crear el secret con todos los valores sensibles
+          # Se usa kubectl create secret con --dry-run=client | apply para idempotencia
+          kubectl create secret generic colegio-secrets \
+            --namespace="${{ env.K8S_NAMESPACE }}" \
+            --from-literal=jwt-secret="${{ secrets.JWT_SECRET }}" \
+            --from-literal=rabbitmq-host="${{ secrets.RABBITMQ_HOST }}" \
+            --from-literal=rabbitmq-user="${{ secrets.RABBITMQ_USER }}" \
+            --from-literal=rabbitmq-pass="${{ secrets.RABBITMQ_PASS }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "✅ Kubernetes Secrets actualizados."
+
+      - name: 📋 Aplicar todos los manifests de Kubernetes
+        run: |
+          ECR_BASE="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO_PREFIX }}"
+          SHA="${{ github.sha }}"
+
+          echo "📋 Aplicando manifests con imagen tag: sha-${SHA}"
+
+          # Aplicar todos los manifests (reemplazando el ACCOUNT_ID placeholder)
+          for file in eks/k8s-manifests/deployment-*.yaml; do
+            sed "s/ACCOUNT_ID/${{ secrets.AWS_ACCOUNT_ID }}/g" "$file" | kubectl apply -f -
+            echo "  ✅ Aplicado: $file"
+          done
+
+      - name: 🔄 Actualizar imagen en cada Deployment con SHA del commit
+        run: |
+          ECR_BASE="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO_PREFIX }}"
+          SHA="${{ github.sha }}"
+          NS="${{ env.K8S_NAMESPACE }}"
+
+          declare -A DEPLOYMENTS=(
+            ["api-gateway"]="api-gateway/colegio-api-gateway"
+            ["eureka-server"]="eureka-server/colegio-eureka-server"
+            ["frontend"]="frontend/colegio-frontend"
+            ["ms-autenticacion"]="ms-autenticacion/colegio-ms-autenticacion"
+            ["ms-calificaciones"]="ms-calificaciones/colegio-ms-calificaciones"
+          )
+
+          for deployment in "${!DEPLOYMENTS[@]}"; do
+            repo="${DEPLOYMENTS[$deployment]}"
+            container="${deployment}"
+            new_image="${ECR_BASE}/${repo##*/}:sha-${SHA}"
+
+            # Para api-gateway y eureka, el container name es diferente al deployment
+            if [[ "$deployment" == "api-gateway" ]]; then container="api-gateway"; fi
+            if [[ "$deployment" == "eureka-server" ]]; then container="eureka-server"; fi
+
+            echo "🔄 Actualizando ${deployment} → ${new_image}"
+            kubectl set image deployment/${deployment} \
+              ${container}=${ECR_BASE}/${DEPLOYMENTS[$deployment]##*/}:sha-${SHA} \
+              -n "${NS}" 2>/dev/null || \
+            kubectl set image deployment/${deployment} \
+              ${deployment}=${ECR_BASE}/${DEPLOYMENTS[$deployment]##*/}:sha-${SHA} \
+              -n "${NS}"
+          done
+
+      - name: ⏳ Esperar Rollout Exitoso de todos los Deployments
+        run: |
+          NS="${{ env.K8S_NAMESPACE }}"
+          DEPLOYMENTS=("api-gateway" "eureka-server" "frontend" "ms-autenticacion" "ms-calificaciones")
+          TIMEOUT=600  # 10 minutos máximo por deployment
+
+          echo "⏳ Esperando rollout de todos los deployments..."
+          for deployment in "${DEPLOYMENTS[@]}"; do
+            echo "  → Esperando: ${deployment}"
+            if kubectl rollout status deployment/${deployment} \
+                -n "${NS}" \
+                --timeout="${TIMEOUT}s"; then
+              echo "  ✅ ${deployment} — ROLLOUT EXITOSO"
+            else
+              echo "  ❌ ${deployment} — ROLLOUT FALLÓ"
+              echo "  📋 Logs del deployment:"
+              kubectl describe deployment/${deployment} -n "${NS}" | tail -20
+              kubectl logs -n "${NS}" -l app=${deployment} --tail=50 2>/dev/null || true
+              exit 1
+            fi
+          done
+          echo "✅ Todos los deployments están estables."
+
+      - name: 📊 Estado de pods post-deploy
+        if: always()
+        run: |
+          NS="${{ env.K8S_NAMESPACE }}"
+          echo "=== Pods en namespace: ${NS} ==="
+          kubectl get pods -n "${NS}" -o wide
+
+          echo ""
+          echo "=== Services (LoadBalancers) ==="
+          kubectl get svc -n "${NS}"
+
+          echo ""
+          echo "=== Deployments ==="
+          kubectl get deployments -n "${NS}"
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 3: Health Check vía LoadBalancer
+  # ─────────────────────────────────────────────────────────────────
+  health-check:
+    name: 🏥 Health Check — Endpoints
+    runs-on: ubuntu-latest
+    needs: deploy-eks
+
+    steps:
+      - name: 🔑 Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: ⚙️ Configurar kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ env.EKS_CLUSTER }}" \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: 🔍 Obtener DNS de los LoadBalancers
+        id: get-lb
+        run: |
+          NS="${{ env.K8S_NAMESPACE }}"
+
+          # Esperar hasta 5 minutos a que los LB tengan hostname asignado
+          for i in $(seq 1 30); do
+            FRONTEND_DNS=$(kubectl get svc frontend -n "${NS}" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            GATEWAY_DNS=$(kubectl get svc api-gateway -n "${NS}" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+
+            if [[ -n "$FRONTEND_DNS" && -n "$GATEWAY_DNS" ]]; then
+              break
+            fi
+            echo "⏳ Esperando hostname del LoadBalancer (intento $i/30)..."
+            sleep 10
+          done
+
+          echo "frontend_dns=${FRONTEND_DNS}" >> $GITHUB_OUTPUT
+          echo "gateway_dns=${GATEWAY_DNS}"   >> $GITHUB_OUTPUT
+
+          if [[ -n "$FRONTEND_DNS" ]]; then
+            echo "✅ Frontend LB: ${FRONTEND_DNS}"
+          else
+            echo "⚠️  Frontend LoadBalancer DNS aún no asignado"
+          fi
+
+          if [[ -n "$GATEWAY_DNS" ]]; then
+            echo "✅ Gateway LB: ${GATEWAY_DNS}"
+          else
+            echo "⚠️  Gateway LoadBalancer DNS aún no asignado"
+          fi
+
+      - name: 🏥 Health Check — Frontend (puerto 80)
+        env:
+          FRONTEND_DNS: ${{ steps.get-lb.outputs.frontend_dns }}
+        run: |
+          if [[ -z "$FRONTEND_DNS" ]]; then
+            echo "⚠️  Sin DNS de frontend — saltando health check."
+            exit 0
+          fi
+
+          echo "🔍 Verificando Frontend en http://${FRONTEND_DNS}..."
+          for attempt in 1 2 3 4 5; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 15 "http://${FRONTEND_DNS}/" || echo "000")
+
+            if [[ "$HTTP_CODE" == "200" ]]; then
+              echo "✅ Frontend UP — HTTP ${HTTP_CODE}"
+              break
+            fi
+            echo "⏳ Intento $attempt/5 (HTTP ${HTTP_CODE})"
+            sleep 20
+          done
+
+      - name: 🔥 Smoke Test — API Gateway (puerto 8080)
+        env:
+          GATEWAY_DNS: ${{ steps.get-lb.outputs.gateway_dns }}
+        run: |
+          if [[ -z "$GATEWAY_DNS" ]]; then
+            echo "⚠️  Sin DNS de gateway — saltando smoke test."
+            exit 0
+          fi
+
+          echo "🔥 Smoke test al Gateway en http://${GATEWAY_DNS}:8080..."
+          for attempt in 1 2 3; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 15 \
+              -X POST "http://${GATEWAY_DNS}:8080/auth/login" \
+              -H "Content-Type: application/json" \
+              -d '{"rut":"11111111-1","password":"Admin1234!"}' || echo "000")
+
+            if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "401" ]]; then
+              echo "✅ Gateway responde — HTTP ${HTTP_CODE}"
+              exit 0
+            fi
+            echo "⏳ Intento $attempt/3 (HTTP ${HTTP_CODE})"
+            sleep 15
+          done
+          echo "⚠️  Gateway no respondió al smoke test (puede necesitar más tiempo de warmup)"
+
+      - name: 📋 Resumen del Deploy EKS
+        if: always()
+        env:
+          FRONTEND_DNS: ${{ steps.get-lb.outputs.frontend_dns }}
+          GATEWAY_DNS:  ${{ steps.get-lb.outputs.gateway_dns }}
+        run: |
+          echo "## 🚀 Deploy EKS + ECR — $(date '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Cluster EKS:** \`${{ env.EKS_CLUSTER }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Namespace:** \`${{ env.K8S_NAMESPACE }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Registry:** \`${{ env.ECR_REGISTRY }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### URLs de Acceso" >> $GITHUB_STEP_SUMMARY
+          echo "| Servicio | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🌐 Frontend | http://${FRONTEND_DNS} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔌 API Gateway | http://${GATEWAY_DNS}:8080 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Imágenes ECR desplegadas" >> $GITHUB_STEP_SUMMARY
+          echo "| Servicio | Imagen ECR |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-----------|" >> $GITHUB_STEP_SUMMARY
+          ECR_BASE="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO_PREFIX }}"
+          SHA="${{ github.sha }}"
+          echo "| api-gateway | \`${ECR_BASE}/colegio-api-gateway:sha-${SHA}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| eureka-server | \`${ECR_BASE}/colegio-eureka-server:sha-${SHA}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| frontend | \`${ECR_BASE}/colegio-frontend:sha-${SHA}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| ms-autenticacion | \`${ECR_BASE}/colegio-ms-autenticacion:sha-${SHA}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| ms-calificaciones | \`${ECR_BASE}/colegio-ms-calificaciones:sha-${SHA}\` |" >> $GITHUB_STEP_SUMMARY
+
+# Trigger eks

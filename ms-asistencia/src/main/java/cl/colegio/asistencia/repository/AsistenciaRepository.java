@@ -3,8 +3,6 @@ package cl.colegio.asistencia.repository;
 import cl.colegio.asistencia.entity.Asistencia;
 import cl.colegio.asistencia.entity.EstadoAsistencia;
 import com.google.cloud.firestore.*;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Repository;
 
 import java.util.*;
@@ -14,12 +12,20 @@ import java.util.concurrent.ExecutionException;
  * Repositorio de Firestore para la colección "asistencia".
  * Proporciona operaciones CRUD y consultas específicas por estudiante, docente y fecha.
  */
-@Slf4j
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 @Repository
-@RequiredArgsConstructor
 public class AsistenciaRepository {
 
+    private static final Logger log = LoggerFactory.getLogger(AsistenciaRepository.class);
+
     private final Firestore firestore;
+    
+    public AsistenciaRepository(Firestore firestore) {
+        this.firestore = firestore;
+    }
+
     private static final String COLLECTION = "asistencia";
 
     public Asistencia save(Asistencia asistencia) {
@@ -126,16 +132,16 @@ public class AsistenciaRepository {
         String estadoStr = doc.getString("estado");
         EstadoAsistencia estado = estadoStr != null ? EstadoAsistencia.valueOf(estadoStr) : null;
 
-        return Asistencia.builder()
-                .id(doc.getId())
-                .estudianteId(doc.getString("estudianteId"))
-                .estudianteNombre(doc.getString("estudianteNombre"))
-                .docenteId(doc.getString("docenteId"))
-                .asignaturaId(doc.getString("asignaturaId"))
-                .asignaturaNombre(doc.getString("asignaturaNombre"))
-                .fecha(doc.getString("fecha"))
-                .estado(estado)
-                .observacion(doc.getString("observacion"))
-                .build();
+        Asistencia a = new Asistencia();
+        a.setId(doc.getId());
+        a.setEstudianteId(doc.getString("estudianteId"));
+        a.setEstudianteNombre(doc.getString("estudianteNombre"));
+        a.setDocenteId(doc.getString("docenteId"));
+        a.setAsignaturaId(doc.getString("asignaturaId"));
+        a.setAsignaturaNombre(doc.getString("asignaturaNombre"));
+        a.setFecha(doc.getString("fecha"));
+        a.setEstado(estado);
+        a.setObservacion(doc.getString("observacion"));
+        return a;
     }
 }
