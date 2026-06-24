@@ -123,12 +123,24 @@ jobs:
         if: steps.check-cluster.outputs.cluster_ok == 'true'
         id: dynamic-api-url
         run: |
-          ALB_DNS=$(aws elbv2 describe-load-balancers --names "colegio-alb" --region "${{ env.AWS_REGION }}" --query "LoadBalancers[0].DNSName" --output text 2>/dev/null || echo "")
-          if [[ -n "$ALB_DNS" && "$ALB_DNS" != "None" ]]; then
-            echo "API_URL=http://${ALB_DNS}:8080" >> $GITHUB_OUTPUT
-          else
-            echo "API_URL=${{ secrets.VITE_API_URL }}" >> $GITHUB_OUTPUT
+          API_URL=$(python3 -c "
+          import sys
+          try:
+              import boto3
+              elbv2 = boto3.client('elbv2', region_name='${{ env.AWS_REGION }}')
+              lbs = elbv2.describe_load_balancers(Names=['colegio-alb'])
+              if lbs['LoadBalancers']:
+                  print(f\"http://{lbs['LoadBalancers'][0]['DNSName']}:8080\")
+              else:
+                  print('${{ secrets.VITE_API_URL }}')
+          except Exception as e:
+              print('${{ secrets.VITE_API_URL }}')
+          ")
+          if [[ -z "$API_URL" || "$API_URL" == "None" ]]; then
+            API_URL="${{ secrets.VITE_API_URL }}"
           fi
+          echo "URL resultante: $API_URL"
+          echo "API_URL=$API_URL" >> $GITHUB_OUTPUT
 
       - name: ⚡ Configurar Docker Buildx
         if: steps.check-cluster.outputs.cluster_ok == 'true'
