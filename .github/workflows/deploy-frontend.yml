@@ -39,6 +39,33 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: 🔑 Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            us-east-1
+
+      # Obtiene la IP pública actual del EC2 que corre el API Gateway
+      # (la IP cambia cada vez que se reinicia el lab de AWS Academy)
+      - name: 🔍 Obtener IP dinámica del API Gateway
+        id: api-url
+        run: |
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=ec2-gateway" \
+                      "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --output text --region us-east-1 2>/dev/null || echo "")
+
+          if [[ -n "$PUBLIC_IP" && "$PUBLIC_IP" != "None" ]]; then
+            echo "api_url=http://$PUBLIC_IP:8080" >> $GITHUB_OUTPUT
+            echo "✅ API Gateway EC2: http://$PUBLIC_IP:8080"
+          else
+            echo "api_url=${{ secrets.VITE_API_URL }}" >> $GITHUB_OUTPUT
+            echo "⚠️  EC2 no encontrado, usando secret VITE_API_URL: ${{ secrets.VITE_API_URL }}"
+          fi
+
       # Genera tags: latest + sha-<commit>
       - name: 🏷️ Generar metadata de imagen
         id: meta
@@ -60,9 +87,9 @@ jobs:
           file: ./frontend/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          # VITE_API_URL se inyecta como build arg para que Vite la embeba en el JS
+          # VITE_API_URL se obtiene dinámicamente desde la IP actual del EC2 gateway
           build-args: |
-            VITE_API_URL=${{ secrets.VITE_API_URL }}
+            VITE_API_URL=${{ steps.api-url.outputs.api_url }}
             VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
           # Caché entre workflows del mismo repositorio
           cache-from: type=gha
