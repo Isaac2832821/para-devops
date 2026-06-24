@@ -1,9 +1,9 @@
 # ══════════════════════════════════════════════════════════════════
-# CI/CD Pipeline — Frontend
+# CI/CD Pipeline — Frontend (ECS Fargate)
 # Colegio Bernardo O'Higgins — Sistema de Gestión Escolar
 #
 # Trigger: push sobre la rama 'deploy' con cambios en frontend/
-# Flujo:   Build imagen Docker → Push Docker Hub → Deploy EC2 → Smoke Test
+# Flujo:   Build imagen Docker → Push Docker Hub → Deploy Amazon ECS Fargate
 # ══════════════════════════════════════════════════════════════════
 name: CI/CD — Frontend
 
@@ -68,10 +68,10 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ─────────────────────────────────────────────────────────────
-  # JOB 2: Deploy automático en EC2 Frontend (subred pública)
+  # JOB 2: Deploy automático en Amazon ECS (Fargate)
   # ─────────────────────────────────────────────────────────────
   deploy:
-    name: 🚀 Deploy en EC2 Frontend
+    name: 🚀 Deploy en Amazon ECS Fargate
     runs-on: ubuntu-latest
     needs: build-and-push
 
@@ -84,80 +84,31 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            us-east-1
 
-      - name: 🔍 Obtener Instance ID ec2-frontend
-        id: get-instance
+      - name: 📥 Descargar Task Definition actual
         run: |
-          ID=$(aws ec2 describe-instances \
-            --filters "Name=tag:Name,Values=ec2-frontend" \
-                      "Name=instance-state-name,Values=running" \
-            --query "Reservations[0].Instances[0].InstanceId" \
-            --output text)
-          PUBLIC_IP=$(aws ec2 describe-instances \
-            --filters "Name=tag:Name,Values=ec2-frontend" \
-                      "Name=instance-state-name,Values=running" \
-            --query "Reservations[0].Instances[0].PublicIpAddress" \
-            --output text)
-          echo "instance_id=$ID" >> $GITHUB_OUTPUT
-          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
-          echo "✅ Frontend instance: $ID (Public IP: $PUBLIC_IP)"
+          aws ecs describe-task-definition --task-definition colegio-frontend-task --query taskDefinition > task-definition.json
 
-      - name: 🖥️ Deploy via SSM en EC2 Frontend
-        env:
-          DH_USER:     ${{ secrets.DOCKERHUB_USERNAME }}
-          DH_TOKEN:    ${{ secrets.DOCKERHUB_TOKEN }}
-          INSTANCE_ID: ${{ steps.get-instance.outputs.instance_id }}
-        run: |
-          python3 << 'PYEOF'
-          import json, os
-          dh_user  = os.environ['DH_USER']
-          dh_token = os.environ['DH_TOKEN']
-          commands = [
-            f"echo '{dh_token}' | docker login -u '{dh_user}' --password-stdin",
-            # Pull nueva imagen antes de detener el contenedor (minimiza downtime)
-            f"docker pull '{dh_user}/colegio-frontend:latest'",
-            "docker stop frontend 2>/dev/null || true",
-            "docker rm   frontend 2>/dev/null || true",
-            f"docker run -d --name frontend --restart unless-stopped -p 80:8080 {dh_user}/colegio-frontend:latest",
-            "docker ps | grep frontend",
-            "docker image prune -f",
-          ]
-          with open("/tmp/ssm-frontend.json", "w") as f:
-              json.dump({"commands": commands}, f)
-          print("✅ JSON SSM generado OK")
-          PYEOF
+      - name: 📝 Configurar nueva imagen en Task Definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: frontend-container
+          image: ${{ env.IMAGE_NAME }}:latest
 
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --parameters file:///tmp/ssm-frontend.json \
-            --comment "Deploy frontend ${{ github.sha }}" \
-            --region us-east-1 \
-            --query "Command.CommandId" \
-            --output text)
-          echo "SSM Command ID: $COMMAND_ID"
-
-          for i in $(seq 1 30); do
-            sleep 10
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --region us-east-1 \
-              --query "StatusDetails" --output text 2>/dev/null || echo "Pending")
-            echo "⏳ ($i/30): $STATUS"
-            if [[ "$STATUS" == "Success" ]]; then
-              aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region us-east-1 --query "StandardOutputContent" --output text
-              break
-            elif [[ "$STATUS" == *"Failed"* || "$STATUS" == "Cancelled" || "$STATUS" == *"TimedOut"* ]]; then
-              aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region us-east-1 --query "StandardErrorContent" --output text
-              exit 1
-            fi
-          done
+      - name: 🚀 Desplegar a Amazon ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: frontend-service
+          cluster: colegio-cluster
+          wait-for-service-stability: true
 
   # ─────────────────────────────────────────────────────────────
-  # JOB 3: Smoke Test — Verificar que el Frontend responde HTTP 200
+  # JOB 3: Smoke Test — Obtener URL del Load Balancer
   # ─────────────────────────────────────────────────────────────
   smoke-test:
-    name: 🔥 Smoke Test — Frontend
+    name: 🔥 Smoke Test — ALB Frontend
     runs-on: ubuntu-latest
     needs: deploy
 
@@ -170,44 +121,38 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            us-east-1
 
-      - name: 🔍 Obtener IP pública de ec2-frontend
-        id: get-ip
+      - name: 🔍 Obtener DNS del Application Load Balancer
+        id: get-alb
         run: |
-          PUBLIC_IP=$(aws ec2 describe-instances \
-            --filters "Name=tag:Name,Values=ec2-frontend" \
-                      "Name=instance-state-name,Values=running" \
-            --query "Reservations[0].Instances[0].PublicIpAddress" \
-            --output text)
-          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
-          echo "Frontend IP: $PUBLIC_IP"
+          ALB_DNS=$(aws elbv2 describe-load-balancers --names colegio-frontend-alb --query "LoadBalancers[0].DNSName" --output text)
+          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
+          echo "🌐 ALB DNS: http://$ALB_DNS"
 
-      - name: 🔥 Smoke Test — HTTP 200 en el Frontend
+      - name: 🔥 Smoke Test — HTTP 200 en el ALB
         env:
-          PUBLIC_IP: ${{ steps.get-ip.outputs.public_ip }}
+          ALB_DNS: ${{ steps.get-alb.outputs.alb_dns }}
         run: |
-          echo "🔥 Verificando que el frontend responde en http://$PUBLIC_IP"
-          for attempt in 1 2 3 4; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "http://$PUBLIC_IP/" || echo "000")
+          echo "🔥 Verificando que el frontend responde en http://$ALB_DNS"
+          for attempt in {1..6}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "http://$ALB_DNS/" || echo "000")
             if [[ "$HTTP_CODE" == "200" ]]; then
-              echo "✅ Frontend UP — HTTP $HTTP_CODE"
-              echo "🌐 URL del sistema: http://$PUBLIC_IP"
+              echo "✅ Frontend ECS UP — HTTP $HTTP_CODE"
+              echo "🌐 URL del sistema: http://$ALB_DNS"
               exit 0
             fi
-            echo "⏳ Intento $attempt/4 — Frontend (HTTP $HTTP_CODE)"
-            sleep 10
+            echo "⏳ Intento $attempt/6 — ALB (HTTP $HTTP_CODE)"
+            sleep 15
           done
-          echo "❌ Frontend no respondió — verificar logs del contenedor en EC2"
+          echo "❌ Frontend no respondió en el ALB"
           exit 1
 
       - name: 📋 Publicar URL en Job Summary
         if: success()
         env:
-          PUBLIC_IP: ${{ steps.get-ip.outputs.public_ip }}
+          ALB_DNS: ${{ steps.get-alb.outputs.alb_dns }}
         run: |
-          echo "## ✅ Deploy Frontend Exitoso" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Deploy en Amazon ECS Exitoso" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**URL Frontend:** http://$PUBLIC_IP" >> $GITHUB_STEP_SUMMARY
+          echo "**Servicio Serverless:** AWS Fargate (Alta Disponibilidad)" >> $GITHUB_STEP_SUMMARY
+          echo "**URL Frontend (Balanceador):** http://$ALB_DNS" >> $GITHUB_STEP_SUMMARY
           echo "**URL Gateway:** ${{ secrets.VITE_API_URL }}" >> $GITHUB_STEP_SUMMARY
-
-# Trigger frontend
