@@ -142,6 +142,18 @@ jobs:
           echo "🏷️ Imagen SHA: ${IMAGE_SHA}"
           echo "🏷️ Imagen latest: ${IMAGE_LATEST}"
 
+      - name: ⚙️ Fetch API Gateway URL (Dynamic)
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
+        id: dynamic-api-url
+        run: |
+          aws eks update-kubeconfig --name "${{ env.EKS_CLUSTER }}" --region "${{ env.AWS_REGION }}"
+          GATEWAY_DNS=$(kubectl get svc api-gateway -n "${{ env.K8S_NAMESPACE }}" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          if [[ -n "$GATEWAY_DNS" ]]; then
+            echo "API_URL=http://${GATEWAY_DNS}:8080" >> $GITHUB_OUTPUT
+          else
+            echo "API_URL=${{ secrets.VITE_API_URL }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: ⚡ Configurar Docker Buildx
         if: steps.check-cluster.outputs.cluster_ok == 'true'
         uses: docker/setup-buildx-action@v3
@@ -157,7 +169,7 @@ jobs:
             ${{ steps.meta.outputs.image-sha }}
             ${{ steps.meta.outputs.image-latest }}
           build-args: |
-            VITE_API_URL=${{ secrets.VITE_API_URL }}
+            VITE_API_URL=${{ steps.dynamic-api-url.outputs.API_URL }}
             VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
           # Caché por servicio — reduce tiempo de build hasta un 70%
           cache-from: type=gha,scope=${{ matrix.service }}
@@ -214,11 +226,18 @@ jobs:
 
       - name: 🔒 Crear/Actualizar Kubernetes Secrets
         run: |
+          # Fallback JWT secret if not provided
+          JWT="${{ secrets.JWT_SECRET }}"
+          if [[ -z "$JWT" ]]; then
+            JWT="este-es-un-secreto-muy-seguro-12345"
+            echo "⚠️ JWT_SECRET secret was empty, using default."
+          fi
+          
           # Crear el secret con todos los valores sensibles
           # Se usa kubectl create secret con --dry-run=client | apply para idempotencia
           kubectl create secret generic colegio-secrets \
             --namespace="${{ env.K8S_NAMESPACE }}" \
-            --from-literal=jwt-secret="${{ secrets.JWT_SECRET }}" \
+            --from-literal=jwt-secret="$JWT" \
             --from-literal=rabbitmq-host="${{ secrets.RABBITMQ_HOST }}" \
             --from-literal=rabbitmq-user="${{ secrets.RABBITMQ_USER }}" \
             --from-literal=rabbitmq-pass="${{ secrets.RABBITMQ_PASS }}" \
