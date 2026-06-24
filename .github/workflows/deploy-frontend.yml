@@ -39,6 +39,69 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: 🔑 Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            us-east-1
+
+      # Obtiene la URL real del API Gateway en este orden:
+      #   1. LoadBalancer de EKS (si el cluster existe)
+      #   2. IP pública del EC2 etiquetado ec2-gateway (si existe)
+      #   3. Fallback al secret VITE_API_URL
+      - name: 🔍 Obtener URL dinámica del API Gateway
+        id: api-url
+        run: |
+          python3 << 'PYEOF'
+          import subprocess, json, os, sys
+
+          def run(cmd):
+              r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+              return r.stdout.strip(), r.returncode
+
+          api_url = ""
+
+          # 1 — Intentar EKS
+          out, code = run(
+              "aws eks describe-cluster --name colegio-eks-cluster "
+              "--region us-east-1 --query cluster.status --output text 2>/dev/null"
+          )
+          if code == 0 and out == "ACTIVE":
+              run("aws eks update-kubeconfig --name colegio-eks-cluster --region us-east-1")
+              dns, _ = run(
+                  "kubectl get svc api-gateway -n colegio "
+                  "-o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null"
+              )
+              if dns:
+                  api_url = f"http://{dns}:8080"
+                  print(f"✅ API Gateway en EKS: {api_url}")
+
+          # 2 — Intentar EC2 ec2-gateway
+          if not api_url:
+              ip, code = run(
+                  "aws ec2 describe-instances "
+                  "--filters 'Name=tag:Name,Values=ec2-gateway' "
+                  "          'Name=instance-state-name,Values=running' "
+                  "--query 'Reservations[0].Instances[0].PublicIpAddress' "
+                  "--output text --region us-east-1 2>/dev/null"
+              )
+              if code == 0 and ip and ip != "None":
+                  api_url = f"http://{ip}:8080"
+                  print(f"✅ API Gateway en EC2: {api_url}")
+
+          # 3 — Fallback al secret
+          if not api_url:
+              api_url = os.environ.get("VITE_API_URL_SECRET", "")
+              print(f"⚠️  Usando VITE_API_URL del secret: {api_url}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"api_url={api_url}\n")
+          PYEOF
+        env:
+          VITE_API_URL_SECRET: ${{ secrets.VITE_API_URL }}
+
       # Genera tags: latest + sha-<commit>
       - name: 🏷️ Generar metadata de imagen
         id: meta
@@ -60,9 +123,9 @@ jobs:
           file: ./frontend/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          # VITE_API_URL se inyecta como build arg para que Vite la embeba en el JS
+          # VITE_API_URL se resuelve dinámicamente (EKS → EC2 → secret fallback)
           build-args: |
-            VITE_API_URL=${{ secrets.VITE_API_URL }}
+            VITE_API_URL=${{ steps.api-url.outputs.api_url }}
             VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
           # Caché entre workflows del mismo repositorio
           cache-from: type=gha
