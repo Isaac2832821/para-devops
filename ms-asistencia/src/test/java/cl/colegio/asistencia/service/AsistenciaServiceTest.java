@@ -237,6 +237,8 @@ class AsistenciaServiceTest {
 
             verify(asistenciaRepository).deleteById("asis-001");
         }
+    }
+
     // ── RESUMEN ASISTENCIA (Regla 85% MINEDUC) ───────────────────────────
 
     @Nested

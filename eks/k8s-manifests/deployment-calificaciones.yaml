@@ -1,0 +1,110 @@
+# ══════════════════════════════════════════════════════════════════
+# deployment-calificaciones.yaml — Microservicio de Calificaciones
+# Colegio Bernardo O'Higgins — Sistema de Gestión Escolar
+#
+# Imagen: ECR → <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/colegio/colegio-ms-calificaciones
+# Puerto: 8082
+# Réplicas: 1
+# ══════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ms-calificaciones
+  namespace: colegio
+  labels:
+    app: ms-calificaciones
+    project: colegio-ohiggins
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ms-calificaciones
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ms-calificaciones
+        project: colegio-ohiggins
+    spec:
+      containers:
+        - name: ms-calificaciones
+          # La imagen se actualiza automáticamente por el workflow de CI/CD
+          image: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/colegio/colegio-ms-calificaciones:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8082
+              name: http
+          env:
+            - name: EUREKA_CLIENT_SERVICEURL_DEFAULTZONE
+              value: "http://eureka-server.colegio.svc.cluster.local:8761/eureka"
+            - name: EUREKA_INSTANCE_PREFERIPADDRESS
+              value: "true"
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: "/app/config/serviceAccountKey.json"
+            - name: RABBITMQ_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: colegio-secrets
+                  key: rabbitmq-host
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: colegio-secrets
+                  key: rabbitmq-user
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: colegio-secrets
+                  key: rabbitmq-pass
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: colegio-secrets
+                  key: jwt-secret
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1024Mi"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ms-calificaciones
+  namespace: colegio
+  labels:
+    app: ms-calificaciones
+    project: colegio-ohiggins
+spec:
+  type: ClusterIP
+  selector:
+    app: ms-calificaciones
+  ports:
+    - name: http
+      port: 8082
+      targetPort: 8082
+      protocol: TCP

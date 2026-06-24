@@ -209,3 +209,5 @@ jobs:
           echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**URL Frontend:** http://$PUBLIC_IP" >> $GITHUB_STEP_SUMMARY
           echo "**URL Gateway:** ${{ secrets.VITE_API_URL }}" >> $GITHUB_STEP_SUMMARY
+
+# Trigger frontend

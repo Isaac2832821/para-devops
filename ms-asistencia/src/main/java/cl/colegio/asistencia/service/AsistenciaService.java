@@ -6,7 +6,6 @@ import cl.colegio.asistencia.dto.ResumenAsistenciaDTO.EstadoAsistenciaResumen;
 import cl.colegio.asistencia.entity.Asistencia;
 import cl.colegio.asistencia.entity.EstadoAsistencia;
 import cl.colegio.asistencia.repository.AsistenciaRepository;
-import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -29,10 +28,13 @@ import java.util.NoSuchElementException;
  * para el cálculo del porcentaje.
  */
 @Service
-@RequiredArgsConstructor
 public class AsistenciaService {
 
     private final AsistenciaRepository asistenciaRepository;
+    
+    public AsistenciaService(AsistenciaRepository asistenciaRepository) {
+        this.asistenciaRepository = asistenciaRepository;
+    }
 
     /** Porcentaje mínimo para aprobación por asistencia (Decreto MINEDUC 511). */
     private static final double PORCENTAJE_MINIMO_APROBACION = 75.0;

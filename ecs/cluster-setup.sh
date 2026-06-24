@@ -83,7 +83,7 @@ EXISTING_SG=$(aws ec2 describe-security-groups \
 if [[ "$EXISTING_SG" == "None" || -z "$EXISTING_SG" ]]; then
   ECS_SG=$(aws ec2 create-security-group \
     --group-name "$ECS_SG_NAME" \
-    --description "Security Group para ECS Fargate — Colegio O'Higgins" \
+    --description "Security Group para ECS Fargate - Colegio OHiggins" \
     --vpc-id "$VPC_ID" \
     --region "$REGION" \
     --query "GroupId" --output text)
@@ -112,16 +112,18 @@ EXISTING_CLUSTER=$(aws ecs describe-clusters \
   --query "clusters[0].status" --output text 2>/dev/null || echo "MISSING")
 
 if [[ "$EXISTING_CLUSTER" != "ACTIVE" ]]; then
+  # Crear el rol de servicio de ECS si no existe (requerido en labs nuevos)
+  aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com \
+    --region "$REGION" 2>/dev/null || warn "Rol de servicio ECS ya existe (OK)"
+
+  # Crear cluster sin capacity-providers para evitar problemas de permisos IAM
   aws ecs create-cluster \
     --cluster-name "$CLUSTER_NAME" \
-    --capacity-providers FARGATE FARGATE_SPOT \
-    --default-capacity-provider-strategy \
-      capacityProvider=FARGATE,weight=1,base=1 \
     --tags key=Project,value=colegio-ohiggins key=Environment,value=production \
     --region "$REGION" > /dev/null
-  success "Clúster ECS creado: $CLUSTER_NAME"
+  success "Cluster ECS creado: $CLUSTER_NAME"
 else
-  success "Clúster ECS ya existe y está ACTIVE"
+  success "Cluster ECS ya existe y esta ACTIVE"
 fi
 
 # ─────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 # ──────────────────────────────────────────────────────────────────
 # Stage 1: Build
 # ──────────────────────────────────────────────────────────────────
-FROM maven:3.9.6-eclipse-temurin-17-alpine AS builder
+FROM public.ecr.aws/docker/library/maven:3.9.6-eclipse-temurin-17-alpine AS builder
 
 LABEL stage="builder"
 LABEL maintainer="Colegio Bernardo O'Higgins"
@@ -17,7 +17,7 @@ RUN mvn package -DskipTests -B -q
 # ──────────────────────────────────────────────────────────────────
 # Stage 2: Runtime — JRE mínimo con usuario no-root
 # ──────────────────────────────────────────────────────────────────
-FROM eclipse-temurin:17-jre AS production
+FROM public.ecr.aws/docker/library/eclipse-temurin:17-jre AS production
 
 LABEL maintainer="Colegio Bernardo O'Higgins"
 LABEL description="ms-horarios — Gestión de horarios escolares"

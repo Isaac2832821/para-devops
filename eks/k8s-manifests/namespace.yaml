@@ -1,0 +1,11 @@
+# ══════════════════════════════════════════════════════════════════
+# namespace.yaml — Namespace del proyecto Colegio O'Higgins
+# Colegio Bernardo O'Higgins — Sistema de Gestión Escolar
+# ══════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: colegio
+  labels:
+    project: colegio-ohiggins
+    environment: production

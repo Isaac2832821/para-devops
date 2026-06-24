@@ -2,7 +2,7 @@
 # Stage 1: Build — Compilación con Maven
 # Imagen base: maven:3.9.6-eclipse-temurin-17-alpine
 # ──────────────────────────────────────────────────────────────────
-FROM maven:3.9.6-eclipse-temurin-17-alpine AS builder
+FROM public.ecr.aws/docker/library/maven:3.9.6-eclipse-temurin-17-alpine AS builder
 
 LABEL stage="builder"
 LABEL maintainer="Colegio Bernardo O'Higgins"
@@ -21,7 +21,7 @@ RUN mvn package -DskipTests -B -q
 # Stage 2: Runtime — JRE mínimo con usuario no-root
 # Imagen base: eclipse-temurin:17-jre-alpine (sin JDK ni Maven)
 # ──────────────────────────────────────────────────────────────────
-FROM eclipse-temurin:17-jre-alpine AS production
+FROM public.ecr.aws/docker/library/eclipse-temurin:17-jre-alpine AS production
 
 LABEL maintainer="Colegio Bernardo O'Higgins"
 LABEL description="Eureka Server — Service Discovery"
