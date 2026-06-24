@@ -41,10 +41,32 @@ imagenes/*.zip
 # Archivos binarios grandes (superan límite 100MB de GitHub)
 *.exe
 
-# ── Scripts temporales ────────────────────────────────────────────
+# ── Scripts temporales de debug / AWS troubleshooting ────────────
 fix_orphan.cjs
 *.tmp
 *.bak
+check_*.py
+fix_*.py
+get_*.py
+fetch_*.py
+list_*.py
+read_*.py
+test_*.py
+auth_*.py
+force_*.py
+restart_*.py
+run_*.py
+create_*.py
+update_*.py
+hash.py
+cat_env.py
+find_docker.py
+start_gateway.py
+setup_ecs.py
+Hash.java
+maven.zip
+maven/
+docker_logs.txt
 
 # ── Logs ──────────────────────────────────────────────────────────
 *.log
