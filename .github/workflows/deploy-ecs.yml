@@ -210,8 +210,9 @@ jobs:
                   cd['image'] = new_image
               if 'environment' in cd:
                   for env in cd['environment']:
-                      if 'EUREKA_PRIVATE_IP' in env['value'] and eureka_ip != 'EUREKA_PRIVATE_IP':
-                          env['value'] = env['value'].replace('EUREKA_PRIVATE_IP', eureka_ip)
+                      if 'EUREKA' in env['name'] and eureka_ip != 'EUREKA_PRIVATE_IP':
+                          import re
+                          env['value'] = re.sub(r'172\.31\.\d+\.\d+|EUREKA_PRIVATE_IP', eureka_ip, env['value'])
                           
           # Limpiar campos que no se pueden re-registrar
           for field in ['taskDefinitionArn','revision','status','requiresAttributes',
