@@ -10,7 +10,7 @@ name: CI/CD — Frontend
 on:
   push:
     branches:
-      - deploy
+      - main
     paths:
       - "frontend/**"
       - "docker-compose.ec2-frontend.yml"
