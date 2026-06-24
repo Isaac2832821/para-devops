@@ -119,6 +119,17 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: ⚙️ Fetch API Gateway URL (Dynamic)
+        if: steps.check-cluster.outputs.cluster_ok == 'true'
+        id: dynamic-api-url
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers --names "colegio-alb" --region "${{ env.AWS_REGION }}" --query "LoadBalancers[0].DNSName" --output text 2>/dev/null || echo "")
+          if [[ -n "$ALB_DNS" && "$ALB_DNS" != "None" ]]; then
+            echo "API_URL=http://${ALB_DNS}:8080" >> $GITHUB_OUTPUT
+          else
+            echo "API_URL=${{ secrets.VITE_API_URL }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: ⚡ Configurar Docker Buildx
         if: steps.check-cluster.outputs.cluster_ok == 'true'
         uses: docker/setup-buildx-action@v3
@@ -135,7 +146,7 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_suffix }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_suffix }}:sha-${{ github.sha }}
           build-args: |
-            VITE_API_URL=${{ secrets.VITE_API_URL }}
+            VITE_API_URL=${{ steps.dynamic-api-url.outputs.API_URL }}
             VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
           # Caché por servicio — reduce tiempo de build hasta un 70%
           cache-from: type=gha,scope=${{ matrix.service }}
