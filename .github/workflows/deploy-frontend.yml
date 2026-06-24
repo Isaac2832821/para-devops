@@ -16,6 +16,7 @@ on:
       - "frontend/**"
       - "docker-compose.ec2-frontend.yml"
       - ".github/workflows/deploy-frontend.yml"
+  workflow_dispatch:
 
 # Variables de entorno globales del workflow
 env:
