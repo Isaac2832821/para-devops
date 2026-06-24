@@ -190,8 +190,8 @@ jobs:
               ec2 = boto3.client('ec2', region_name='${{ env.AWS_REGION }}')
               tasks = ecs.list_tasks(cluster='${{ env.ECS_CLUSTER }}', serviceName='colegio-eureka', desiredStatus='RUNNING')
               if tasks['taskArns']:
-                  task_details = ecs.describe_tasks(cluster='${{ env.ECS_CLUSTER }}', tasks=[tasks['taskArns'][0]])
-                  for attachment in task_details['tasks'][0]['attachments']:
+                  task_desc = ecs.describe_tasks(cluster='${{ env.ECS_CLUSTER }}', tasks=tasks['taskArns'])
+                  for attachment in task_desc['tasks'][0]['attachments']:
                       if attachment['type'] == 'ElasticNetworkInterface':
                           for detail in attachment['details']:
                               if detail['name'] == 'networkInterfaceId':
