@@ -166,17 +166,32 @@ jobs:
             --query "taskDefinition" \
             --output json)
 
-          # Actualizar solo la imagen del container específico
+          # Fetch Eureka Private IP
+          EUREKA_TASK_ARN=$(aws ecs list-tasks --cluster "${{ env.ECS_CLUSTER }}" --service-name colegio-eureka --query "taskArns[0]" --output text)
+          if [[ "$EUREKA_TASK_ARN" != "None" && -n "$EUREKA_TASK_ARN" ]]; then
+            EUREKA_ENI=$(aws ecs describe-tasks --cluster "${{ env.ECS_CLUSTER }}" --tasks "$EUREKA_TASK_ARN" --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" --output text)
+            EUREKA_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$EUREKA_ENI" --query "NetworkInterfaces[0].PrivateIpAddress" --output text)
+          else
+            EUREKA_IP="EUREKA_PRIVATE_IP"
+          fi
+          echo "Eureka IP found: $EUREKA_IP"
+
+          # Actualizar imagen del container especifico y reemplazar EUREKA_PRIVATE_IP
           NEW_TASK_DEF=$(echo "$TASK_DEF" | python3 -c "
-          import json, sys
+          import json, sys, os
           td = json.load(sys.stdin)
           container_name = '${{ matrix.container_name }}'
           new_image = '$IMAGE'
+          eureka_ip = '$EUREKA_IP'
           for cd in td['containerDefinitions']:
               if cd['name'] == container_name:
                   cd['image'] = new_image
                   print(f'Updated container {container_name} -> {new_image}', flush=True)
-                  break
+              if 'environment' in cd:
+                  for env in cd['environment']:
+                      if 'EUREKA_PRIVATE_IP' in env['value']:
+                          env['value'] = env['value'].replace('EUREKA_PRIVATE_IP', eureka_ip)
+                          print(f\"Replaced EUREKA_PRIVATE_IP with {eureka_ip}\", flush=True)
           # Limpiar campos que no se pueden re-registrar
           for field in ['taskDefinitionArn','revision','status','requiresAttributes',
                         'compatibilities','registeredAt','registeredBy']:
