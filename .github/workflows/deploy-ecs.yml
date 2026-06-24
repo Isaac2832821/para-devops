@@ -51,13 +51,13 @@ jobs:
             task_family: colegio-api-gateway
             task_file: ecs/task-definitions/ecs-task-gateway.json
             container_name: api-gateway
-          - service: eureka-server
-            context: ./eureka-server
-            image_suffix: colegio-eureka-server
-            ecs_service: colegio-eureka
-            task_family: colegio-eureka-server
-            task_file: ecs/task-definitions/ecs-task-eureka.json
-            container_name: eureka-server
+          # - service: eureka-server
+          #   context: ./eureka-server
+          #   image_suffix: colegio-eureka-server
+          #   ecs_service: colegio-eureka
+          #   task_family: colegio-eureka-server
+          #   task_file: ecs/task-definitions/ecs-task-eureka.json
+          #   container_name: eureka-server
           - service: frontend
             context: ./frontend
             image_suffix: colegio-frontend
