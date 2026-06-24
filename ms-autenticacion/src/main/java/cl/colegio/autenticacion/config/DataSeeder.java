@@ -33,6 +33,7 @@ public class DataSeeder implements ApplicationRunner {
         List<Object[]> semilla = List.of(
             // { rut, nombre, apellido, email, rol }
             new Object[]{"11111111-1", "Administrador", "Sistema",   "admin@colegio.cl",                    Rol.ADMIN},
+            new Object[]{"21843711-7", "Isaac", "Usuario", "isaac@colegio.cl", Rol.ADMIN},
             // ── Docentes ──────────────────────────────────────────────────
             new Object[]{"22222222-2", "María",     "González",  "mgonzalez@colegio.cl",                   Rol.DOCENTE},
             new Object[]{"22222222-3", "Jorge",     "Muñoz",     "jmunoz@colegio.cl",                      Rol.DOCENTE},
