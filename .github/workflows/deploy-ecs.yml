@@ -232,6 +232,7 @@ jobs:
 
       - name: 🚀 Rolling Deploy en ECS Service
         if: steps.check-cluster.outputs.cluster_ok == 'true'
+        continue-on-error: true
         run: |
           echo "🚀 Desplegando en ECS Service: ${{ matrix.ecs_service }}"
           aws ecs update-service \
